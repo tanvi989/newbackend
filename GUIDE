@@ -1,0 +1,335 @@
+# Newbackend – Deploy guide (clone to production)
+
+Step-by-step from cloning the repo to running the API (and optional domain/HTTPS).
+
+---
+
+## 1. Prerequisites
+
+- **Python 3.9+**
+- **Git**
+- **MongoDB Atlas** (or any MongoDB) connection string
+- (Optional) Stripe keys, MSG91, BlueDart if you use those features
+
+---
+
+## 1b. "Python not found" – fix it
+
+**Check what you have:**
+
+- **Windows (PowerShell):** run `py --version` or `python --version` or `python3 --version`
+- **Linux / Mac:** run `python3 --version` or `python --version`
+
+**If nothing works – install Python:**
+
+- **Windows:** Install from [python.org/downloads](https://www.python.org/downloads/). During setup, **check "Add Python to PATH"**, then restart the terminal.
+- **Mac:** `brew install python` (or install from python.org).
+- **Linux:** `sudo apt install python3 python3-venv python3-pip` (Debian/Ubuntu) or `sudo yum install python3` (RHEL/CentOS).
+
+**Use the command that works:**
+
+- If only `python3` works, use `python3` everywhere below instead of `python` (e.g. `python3 -m venv venv`, `python3 app.py`).
+- If only `py` works (Windows), use `py -m venv venv`, `py app.py`, `py -m pip install -r requirements.txt`.
+
+---
+
+## 2. Clone the repo
+
+```bash
+git clone https://github.com/tanvi989/newbackend.git .
+cd newbackend
+```
+
+---
+
+## 3. Python virtual environment
+
+**Windows (PowerShell or CMD):**  
+Use `python` or `py` (whichever works on your machine.)
+```bash
+python -m venv venv
+# or:  py -m venv venv
+venv\Scripts\activate
+```
+
+**Linux / Mac:**  
+Often the command is `python3`:
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+You should see `(venv)` in the prompt. After activation, you can use `python` and `pip` (or `python3` / `pip3`) from inside the venv.
+
+---
+
+## 4. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## 5. Create `.env`
+
+The repo does **not** include `.env` (secrets). Create it in the project root:
+
+**Windows (PowerShell):**
+```powershell
+New-Item -Path .env -ItemType File -Force
+notepad .env
+```
+
+**Linux / Mac:**
+```bash
+touch .env
+nano .env   # or: code .env
+```
+
+Paste the following and replace values where needed:
+
+```env
+
+
+
+# MongoDB
+MONGO_URI=mongodb+srv://USER:PASSWORD@CLUSTER.mongodb.net/gaMultilens?retryWrites=true&w=majority&appName=gaMultilens
+DATABASE_NAME=gaMultilens
+COLLECTION_NAME=accounts_logins
+
+# JWT (use a long random string in production)
+SECRET_KEY=your-secret-key-change-in-production
+
+# Server
+HOST=0.0.0.0
+PORT=5000
+DEBUG=True
+
+# Stripe (optional – leave empty if not using)
+STRIPE_SECRET_KEY=
+STRIPE_PUBLISHABLE_KEY=
+STRIPE_WEBHOOK_SECRET=
+
+# Payment URLs (your frontend URLs)
+CURRENCY=gbp
+PAYMENT_SUCCESS_URL=https://your-frontend.com/payment/success
+PAYMENT_CANCEL_URL=https://your-frontend.com/payment/cancel
+
+# Optional: BlueDart delivery
+# BLUEDART_BASE_URL=
+# BLUEDART_CUSTOMER_CODE=
+# BLUEDART_LOGIN_ID=
+# BLUEDART_LICENSE_KEY=
+# WAREHOUSE_PINCODE=
+# WAREHOUSE_ADDRESS_LINE1=
+
+# Optional: MSG91 email/OTP
+# MSG91_AUTH_KEY=
+# MSG91_DOMAIN=email.multifolks.com
+# MSG91_WELCOME_TEMPLATE_ID=
+# MSG91_ORDER_TEMPLATE_ID=
+# MSG91_SENDER_EMAIL=
+# MSG91_SENDER_NAME=
+```
+
+**Required:** `MONGO_URI`, `DATABASE_NAME`, `COLLECTION_NAME`, `SECRET_KEY`.  
+**If users collection is `accounts_login` (no ‘s’):** set `COLLECTION_NAME=accounts_login`.
+
+---
+
+## 6. Create `config.py`
+
+The app reads env via `config.py`. If the repo doesn’t include it (e.g. ignored), create `config.py` in the project root with:
+
+```python
+import os
+from dotenv import load_dotenv
+
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_env_path = os.path.join(_script_dir, ".env")
+load_dotenv(dotenv_path=_env_path)
+if not os.path.isfile(_env_path):
+    load_dotenv()
+
+MONGO_URI = os.getenv("MONGO_URI", "")
+DATABASE_NAME = os.getenv("DATABASE_NAME", "gaMultilens")
+COLLECTION_NAME = os.getenv("COLLECTION_NAME", "accounts_login")
+
+SECRET_KEY = os.getenv("SECRET_KEY", "change-me")
+
+HOST = os.getenv("HOST", "0.0.0.0")
+PORT = int(os.getenv("PORT", 5000))
+DEBUG = os.getenv("DEBUG", "True") == "True"
+
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+
+CURRENCY = os.getenv("CURRENCY", "gbp")
+PAYMENT_SUCCESS_URL = os.getenv("PAYMENT_SUCCESS_URL", "http://localhost:3000/payment/success")
+PAYMENT_CANCEL_URL = os.getenv("PAYMENT_CANCEL_URL", "http://localhost:3000/payment/cancel")
+
+BLUEDART_BASE_URL = os.getenv("BLUEDART_BASE_URL", "")
+BLUEDART_CUSTOMER_CODE = os.getenv("BLUEDART_CUSTOMER_CODE", "")
+BLUEDART_LOGIN_ID = os.getenv("BLUEDART_LOGIN_ID", "")
+BLUEDART_LICENSE_KEY = os.getenv("BLUEDART_LICENSE_KEY", "")
+WAREHOUSE_PINCODE = os.getenv("WAREHOUSE_PINCODE", "")
+WAREHOUSE_ADDRESS = {
+    "line1": os.getenv("WAREHOUSE_ADDRESS_LINE1", ""),
+    "line2": os.getenv("WAREHOUSE_ADDRESS_LINE2", ""),
+    "line3": os.getenv("WAREHOUSE_ADDRESS_LINE3", ""),
+    "phone": os.getenv("WAREHOUSE_PHONE", ""),
+}
+
+MSG91_AUTH_KEY = os.getenv("MSG91_AUTH_KEY", "")
+MSG91_DOMAIN = os.getenv("MSG91_DOMAIN", "email.multifolks.com")
+MSG91_TEMPLATE_ID = os.getenv("MSG91_TEMPLATE_ID", "")
+MSG91_RESET_TEMPLATE_ID = os.getenv("MSG91_RESET_TEMPLATE_ID", "")
+MSG91_WELCOME_TEMPLATE_ID = os.getenv("MSG91_WELCOME_TEMPLATE_ID", "")
+MSG91_ORDER_TEMPLATE_ID = os.getenv("MSG91_ORDER_TEMPLATE_ID", "")
+MSG91_SENDER_EMAIL = os.getenv("MSG91_SENDER_EMAIL", "")
+MSG91_SENDER_NAME = os.getenv("MSG91_SENDER_NAME", "Multifolks")
+```
+
+---
+
+## 7. Run the backend (development)
+
+```bash
+python app.py
+```
+If you get "python not found", use the same command that worked for the venv: `python3 app.py` or `py app.py`.
+
+- API: **http://0.0.0.0:5000** (or http://localhost:5000)
+- Docs: **http://localhost:5000/docs**
+- Health: **http://localhost:5000/api/health**
+
+Stop with `Ctrl+C`.
+
+---
+
+## 8. Run in production (recommended)
+
+Use Gunicorn + Uvicorn so the app keeps running and handles multiple requests:
+
+```bash
+pip install gunicorn
+gunicorn app:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:5000
+```
+
+- `-w 1`: one worker (increase if you have more CPU and traffic)
+- `-b 0.0.0.0:5000`: listen on all interfaces, port 5000
+
+---
+
+## 9. Run as a service (Linux – systemd)
+
+So the backend starts on boot and restarts on crash:
+
+```bash
+sudo nano /etc/systemd/system/newbackend.service
+```
+
+Paste (adjust paths and user):
+
+```ini
+[Unit]
+Description=Newbackend FastAPI
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/newbackned
+Environment="PATH=/var/www/newbackned/venv/bin"
+ExecStart=/var/www/newbackned/venv/bin/gunicorn app:app -w 1 -k uvicorn.workers.UvicornWorker -b 127.0.0.1:5000
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable newbackend
+sudo systemctl start newbackend
+sudo systemctl status newbackend
+```
+
+---
+
+## 10. Nginx + HTTPS (e.g. newbackend.multifolks.com)
+
+1. **DNS:** A or CNAME for `newbackend.multifolks.com` → your server IP (or hostname).
+sudo nano /etc/nginx/sites-available/newbackend
+
+2. **Nginx site** (e.g. `/etc/nginx/sites-available/newbackend`):
+
+```nginx
+server {
+    listen 80;
+    server_name newbackend.multifolks.com;
+    return 301 https://$server_name$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name newbackend.multifolks.com;
+
+    ssl_certificate     /etc/letsencrypt/live/newbackend.multifolks.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/newbackend.multifolks.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+3. **SSL with Let’s Encrypt:**
+
+```bash
+sudo apt install certbot python3-certbot-nginx
+sudo certbot --nginx -d newbackend.multifolks.com
+```
+
+4. Enable site and reload Nginx:
+
+```bash
+sudo ln -s /etc/nginx/sites-available/newbackend /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+5. **Frontend:** Use `https://newbackend.multifolks.com` as the API base URL. CORS is already set to allow all origins.
+
+---
+
+## 11. Quick checklist
+
+| Step              | Command / action                          |
+|-------------------|-------------------------------------------|
+| Clone             | `git clone https://github.com/tanvi989/newbackend.git && cd newbackend` |
+| Venv              | `python -m venv venv` then activate       |
+| Dependencies      | `pip install -r requirements.txt`         |
+| Env               | Create `.env` with MONGO_URI, SECRET_KEY, etc. |
+| Config            | Create `config.py` if missing             |
+| Run (dev)         | `python app.py`                           |
+| Run (prod)        | `gunicorn app:app -w 1 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:5000` |
+| Domain + HTTPS    | DNS → Nginx → Certbot → proxy to :5000     |
+
+---
+
+## 12. Verify
+
+- **Health:** `curl https://newbackend.multifolks.com/api/health`  
+  Expect: `{"success":true,"mongodb":"connected",...}`
+- **Docs:** Open `https://newbackend.multifolks.com/docs` in a browser.
+
+Done. The API allows all origins (CORS), so any frontend can call it without CORS errors.
