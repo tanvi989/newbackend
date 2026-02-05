@@ -1,0 +1,418 @@
+1️⃣ Point the domain to your server (DNS)
+
+In your domain provider’s DNS panel:
+
+Type: A
+
+Host: final
+
+Value: YOUR_SERVER_PUBLIC_IP
+
+TTL: Auto / Default
+
+Wait a few minutes (sometimes up to 30–60 mins).
+
+You can test:
+
+ping final.multifolks.com
+
+2️⃣ Make sure your React build exists
+
+After:
+
+npm run build
+
+
+You should have something like:
+
+/home/technology/frontend/frontend/build/
+
+3️⃣ Install & enable Nginx (if not already)
+sudo apt update
+sudo apt install nginx -y
+sudo systemctl enable nginx
+sudo systemctl start nginx
+
+4️⃣ Create Nginx config for the domain
+sudo nano /etc/nginx/sites-available/final.multifolks.com
+
+
+Paste this (adjust path if needed):
+
+server {
+    listen 80;
+    server_name final.multifolks.com;
+
+    root /home/technology/frontend/frontend/build;
+    index index.html;
+
+    location / {
+        try_files $uri /index.html;
+    }
+}
+
+5️⃣ Enable the site
+sudo ln -s /etc/nginx/sites-available/final.multifolks.com /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl reload nginx
+
+Now try opening:
+👉 http://final.multifolks.com
+
+6️⃣ (Highly recommended) Add HTTPS (SSL)
+sudo apt install certbot python3-certbot-nginx -y
+sudo certbot --nginx -d final.multifolks.com
+
+--------------------
+1️⃣ DNS for backend domain
+
+In your DNS panel:
+
+Type: A
+
+Host: finalbackend
+
+Value: YOUR_SERVER_PUBLIC_IP
+
+Test:
+
+ping finalbackend.multifolks.com
+
+🐍 BACKEND (Python on port 5000)
+3️⃣ Create virtual environment (recommended)
+python3 -m venv venv
+source venv/bin/activate
+
+4️⃣ Install Python dependencies
+
+Depending on your repo:
+
+If you have requirements.txt
+pip install -r requirements.txt
+
+5️⃣ Run backend locally (test)
+
+Examples:
+
+Flask
+
+python app.py
+
+
+FastAPI
+
+uvicorn main:app --host 127.0.0.1 --port 5000
+
+
+Gunicorn (recommended)
+
+gunicorn app:app --bind 127.0.0.1:5000
+
+curl http://127.0.0.1:5000
+🌍 Step 6: Connect domain via Nginx
+You already did / are doing this part:
+
+final.multifolks.com → React build/
+
+finalbackend.multifolks.com → proxy to localhost:5000
+
+1️⃣ Delete the broken venv
+
+From your backend directory:
+
+deactivate
+rm -rf venv
+
+2️⃣ Make sure venv support is installed
+sudo apt install python3.12-venv -y
+
+3️⃣ Re-create the virtual environment
+python3.12 -m venv venv
+
+
+Activate it:
+
+source venv/bin/activate
+
+5️⃣ Install requirements (THIS time correctly)
+pip install -r requirements.txt
+
+
+✅ No sudo
+✅ No permission errors
+✅ No externally-managed-environment error
+
+Run your backend
+
+Example for FastAPI:
+
+uvicorn main:app --host 127.0.0.1 --port 5000
+
+
+Test:
+
+curl http://127.0.0.1:5000
+
+🚀 Next (production-ready)
+
+Once this runs, I recommend:
+
+Run with gunicorn
+
+Add systemd service
+
+Proxy with Nginx → finalbackend.multifolks.com
+
+https://chatgpt.com/#:~:text=%E2%9D%8C%20If%20you%20see%20root,home/technology/backend/newbackend
+
+4️⃣ Reinstall venv support (safe)
+sudo apt install python3.12-venv python3.12-dev build-essential -y
+
+
+(Some packages like cryptography need this)
+
+5️⃣ Create venv AGAIN (no sudo)
+python3.12 -m venv venv
+
+
+Activate:
+
+source venv/bin/activate
+
+
+Confirm:
+
+which python
+
+
+Should point to:
+
+.../venv/bin/python
+
+6️⃣ Upgrade pip (inside venv)
+pip install --upgrade pip setuptools wheel
+
+7️⃣ Install requirements (NO sudo)
+pip install -r requirements.txt
+
+
+✅ This will now work.
+
+🔁 STEP 5: Run backend with Gunicorn (production)
+
+(Example for FastAPI)
+
+pip install gunicorn
+gunicorn main:app --bind 127.0.0.1:5000 --workers 2
+
+
+Test again:
+
+curl http://127.0.0.1:5000
+
+
+Stop:
+
+CTRL + C
+
+⚙️ STEP 6: Create systemd service (auto-start)
+sudo nano /etc/systemd/system/finalbackend.service
+
+
+Paste (adjust app name if needed):
+
+[Unit]
+Description=Final Backend API
+After=network.target
+
+[Service]
+User=technology
+Group=technology
+WorkingDirectory=/home/technology/backend/newbackend
+Environment="PATH=/home/technology/backend/newbackend/venv/bin"
+ExecStart=/home/technology/backend/newbackend/venv/bin/gunicorn main:app --bind 127.0.0.1:5000 --workers 2
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+
+
+Save.
+
+Enable & start:
+
+sudo systemctl daemon-reexec
+sudo systemctl daemon-reload
+sudo systemctl enable finalbackend
+sudo systemctl start finalbackend
+
+
+Check:
+
+sudo systemctl status finalbackend
+
+
+🌐 STEP 8: Nginx reverse proxy
+sudo nano /etc/nginx/sites-available/finalbackend.multifolks.com
+
+
+Paste:
+
+server {
+    listen 80;
+    server_name finalbackend.multifolks.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+
+Enable:
+
+sudo ln -s /etc/nginx/sites-available/finalbackend.multifolks.com /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl reload nginx
+
+
+Test:
+👉 http://finalbackend.multifolks.com
+
+🔒 STEP 9: HTTPS (SSL)
+sudo certbot --nginx -d finalbackend.multifolks.com
+
+
+Choose:
+✔ Redirect HTTP → HTTPS
+
+Final:
+👉 https://finalbackend.multifolks.com
+
+gunicorn app:app \
+  --worker-class uvicorn.workers.UvicornWorker \
+  --bind 127.0.0.1:5000 \
+  --workers 2
+
+
+sudo nano /etc/systemd/system/finalbackend.service
+Ah! This is a Vite / React / frontend host restriction issue, not Python 😅
+
+When you see:
+
+Blocked request. This host ("finalbackend.multifolks.com") is not allowed
+
+Assuming your React project is /home/technology/frontend:
+
+cd /home/technology/frontend
+npm install      # if not done
+npm run build
+
+
+This creates:
+
+/home/technology/frontend/build
+
+import path from 'path';
+import { defineConfig, loadEnv } from 'vite';
+import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
+
+export default defineConfig(({ mode }) => {
+  // Load environment variables starting with VITE_
+  const env = loadEnv(mode, process.cwd(), 'VITE_');
+
+  const proxyTarget = env.VITE_API_TARGET || 'http://localhost:5000/';
+  const vtobTarget = env.VITE_GETMYFIT_API_BASE || 'https://vtob.multifolks.com';
+
+  console.log("---------------------------------------------------");
+  console.log("DEBUG: Using backend at:", proxyTarget);
+  console.log("DEBUG: VTO backend (Get My Fit) at:", vtobTarget);
+  console.log("---------------------------------------------------");
+
+  return {
+    server: {
+      port: 3000,
+      host: '0.0.0.0',
+
+      proxy: {
+        // VTO / Get My Fit: proxy to vtob.multifolks.com so no CORS in dev (localhost:3000/3001)
+        '/api-vtob': {
+          target: vtobTarget,
+          changeOrigin: true,
+          secure: true,
+          rewrite: (path) => path.replace(/^\/api-vtob/, ''),
+        },
+        // Proxy any API requests to the backend
+        '/api/v1': {
+          target: proxyTarget,
+          changeOrigin: true,
+          secure: true, // HTTPS enabled
+        },
+        '/api/profile': {
+          target: proxyTarget,
+          changeOrigin: true,
+          secure: true,
+        },
+        '/api/health': {
+          target: proxyTarget,
+          changeOrigin: true,
+          secure: true,
+        },
+        '/retailer': {
+          target: proxyTarget,
+          changeOrigin: true,
+          secure: true,
+        },
+        '/accounts': {
+          target: proxyTarget,
+          changeOrigin: true,
+          secure: true,
+        },
+      },
+
+      fs: {
+        allow: ['..'],
+      },
+    },
+
+    // ✅ Updated preview: allow your production domain
+    preview: {
+      port: 3000,
+      host: '0.0.0.0',
+      allowedHosts: [
+        '82.112.238.249',
+        'localhost',
+        '127.0.0.1',
+        'test.tanviparadkar.in',
+        'test.multifolks.com',
+        'finalbackend.multifolks.com', // <-- added your domain
+        'final.multifolks.com'         // <-- also add main frontend domain
+      ],
+    },
+
+    plugins: [react(), tailwindcss()],
+
+    define: {
+      'process.env.API_KEY': JSON.stringify(env.VITE_GEMINI_API_KEY || ''),
+      'process.env.GEMINI_API_KEY': JSON.stringify(env.VITE_GEMINI_API_KEY || ''),
+    },
+
+    resolve: {
+      alias: {
+        '@': path.resolve(__dirname, '.'),
+      },
+    },
+
+    assetsInclude: ['**/*.jpg', '**/*.jpeg', '**/*.png', '**/*.webp'],
+  };
+});
+
+
+sudo apt install certbot python3-certbot-nginx -y
+sudo certbot --nginx -d final.multifolks.com
