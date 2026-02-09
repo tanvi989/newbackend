@@ -1,0 +1,18 @@
+OPTION 1 - Pull then push (fix GitHub first)
+============================================
+
+1. On GitHub, delete the item with the long invalid name:
+   - Open: https://github.com/tanvi989/newbackend
+   - Find: "tanvi.md1️⃣ Point the domain to your server (DNS)..." (folder or file)
+   - Open it, then delete the file(s) inside, or delete the folder
+   - Commit the deletion (e.g. message: "Remove invalid filename")
+
+2. (Optional) On GitHub, add a normal file named "tanvi.md" with your DNS notes if you want that content kept.
+
+3. Then on your PC run:
+   pull_then_push.bat
+
+   Or manually in PowerShell:
+   cd "C:\Users\User\Desktop\multifolks\newbackend"
+   git pull --rebase origin main
+   git push origin main
