@@ -82,6 +82,7 @@ class StripePaymentService:
                 "client_reference_id": str(user_id),
                 "metadata[order_id]": order_id,
                 "metadata[user_id]": str(user_id),
+                "metadata[customer_email]": user_email or "",
             }
             body = urllib.parse.urlencode(form_data).encode("utf-8")
             
@@ -207,15 +208,17 @@ class StripePaymentService:
                     _safe_print(f"Warning: Order creation from cart failed: {order_created.get('error')}")
             
             # Always update payment status on the order (so existing orders get payment_status = paid)
-            # Include user_id and customer_email so any upserted doc is findable by user
+            # Only set customer_email when we have a value (do not overwrite with empty and lose user email)
+            session_email = getattr(session, 'customer_email', None) or (session.metadata or {}).get('customer_email') or ''
             update_payload = {
                 'payment_status': 'paid',
                 'payment_method': 'stripe',
                 'payment_intent_id': session.payment_intent,
                 'updated_at': datetime.utcnow(),
                 'user_id': str(user_id) if user_id else None,
-                'customer_email': getattr(session, 'customer_email', None) or (session.metadata or {}).get('customer_email') or '',
             }
+            if session_email:
+                update_payload['customer_email'] = session_email
             self.orders_collection.update_one(
                 {'order_id': order_id},
                 {'$set': update_payload},

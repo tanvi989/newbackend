@@ -29,6 +29,7 @@ else:
     print("WARNING: MONGO_URI not in environment - check .env in project folder")
 
 from fastapi import FastAPI, Request, Form, HTTPException, Depends, Query, UploadFile, File
+from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
@@ -251,6 +252,26 @@ async def ensure_db_middleware(request: Request, call_next):
     return await call_next(request)
 
 # ... (Existing Code) ...
+
+# ---------- VTO FRAME PROXY (for share/save capture - avoids CORS) ----------
+VTO_IMAGE_BASE = "https://storage.googleapis.com/myapp-image-bucket-001/vto/vto_ready"
+
+@app.get("/api/v1/vto-frame/{skuid}")
+async def get_vto_frame_proxy(skuid: str):
+    """Proxy VTO frame image from GCS for html2canvas capture (same-origin)."""
+    import urllib.request
+    import urllib.error
+    url = f"{VTO_IMAGE_BASE}/{skuid}_VTO.png"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Multifolks-Backend/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = resp.read()
+            return Response(content=data, media_type="image/png")
+    except urllib.error.HTTPError as e:
+        raise HTTPException(status_code=e.code, detail=f"VTO frame not found: {skuid}")
+    except Exception as e:
+        logger.warning(f"VTO frame proxy failed for {skuid}: {e}")
+        raise HTTPException(status_code=502, detail="Could not fetch VTO frame")
 
 # ---------- ROOT ----------
 @app.get("/")
@@ -882,12 +903,27 @@ async def get_user_prescriptions(current_user: dict = Depends(verify_token)):
             doc = guest_rx_collection.find_one({"_id": guest_id})
             prescriptions = (doc.get("prescriptions", []) if doc else [])
             logger.info(f"[RX] Fetching prescriptions for guest {guest_id}: found {len(prescriptions)}")
+            # Sort guest prescriptions latest first
+            def _rx_created_at(p):
+                raw = p.get("created_at") or (p.get("data") or {}).get("created_at") or p.get("createdAt") or ""
+                if not raw:
+                    return ""
+                return raw if isinstance(raw, str) else str(raw)
+            prescriptions = sorted(prescriptions, key=_rx_created_at, reverse=True)
         else:
             user_id = current_user["_id"]
             # Always fetch from DB so we have the latest prescriptions (user doc from token may not include full array)
             user_doc = users_collection.find_one({"_id": user_id}, {"prescriptions": 1})
             prescriptions = (user_doc.get("prescriptions", []) if user_doc else [])
             logger.info(f"[RX] Fetching prescriptions for user {user_id}: found {len(prescriptions)}")
+        
+        # Return latest first (sort by created_at descending) so product/cart pages show newest
+        def _rx_created_at(p):
+            raw = p.get("created_at") or (p.get("data") or {}).get("created_at") or p.get("createdAt") or ""
+            if not raw:
+                return ""
+            return raw if isinstance(raw, str) else str(raw)
+        prescriptions = sorted(prescriptions, key=_rx_created_at, reverse=True)
         
         for i, pres in enumerate(prescriptions):
             logger.info(f"   Prescription {i+1}: type={pres.get('type')}, has_image={bool(pres.get('image_url'))}, name={pres.get('name')}")
@@ -1062,6 +1098,19 @@ class SavePrescriptionRequest(BaseModel):
     image_url: Optional[str] = None
     guest_id: Optional[str] = None
 
+def _sanitize_for_bson(obj: Any) -> Any:
+    """Recursively ensure dict/list values are BSON-serializable (no NaN, Infinity, etc.)."""
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return {str(k): _sanitize_for_bson(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_for_bson(v) for v in obj]
+    if isinstance(obj, float) and (obj != obj or abs(obj) == float("inf")):  # NaN or Inf
+        return None
+    return obj
+
+
 @app.post("/api/v1/user/prescriptions")
 async def save_user_prescription(request: SavePrescriptionRequest, current_user: dict = Depends(verify_token)):
     """Save a new prescription to user's profile (or guest_prescriptions when guest)."""
@@ -1070,19 +1119,22 @@ async def save_user_prescription(request: SavePrescriptionRequest, current_user:
     
     try:
         data_to_store = request.data if isinstance(request.data, dict) else {"items": request.data}
+        data_to_store = _sanitize_for_bson(data_to_store) or {}
         prescription = {
-            "type": request.type,
+            "type": str(request.type),
             "data": data_to_store,
-            "name": request.name,
+            "name": str(request.name),
             "created_at": datetime.now(timezone.utc).isoformat()
         }
         if request.image_url:
-            prescription["image_url"] = request.image_url
+            prescription["image_url"] = str(request.image_url)
 
         # When updating: remove old prescriptions for the same product/cart so only the new one is kept
         assoc = data_to_store.get("associatedProduct") if isinstance(data_to_store, dict) else {}
-        product_sku = assoc.get("productSku") if assoc else None
-        cart_id = assoc.get("cartId") if assoc else None
+        if not isinstance(assoc, dict):
+            assoc = {}
+        product_sku = assoc.get("productSku")
+        cart_id = assoc.get("cartId")
         pull_conditions = []
         if product_sku is not None and str(product_sku).strip() != "":
             pull_conditions.append({"data.associatedProduct.productSku": str(product_sku)})
@@ -1093,28 +1145,47 @@ async def save_user_prescription(request: SavePrescriptionRequest, current_user:
 
         is_guest = current_user.get("is_guest") is True
         if is_guest:
-            # Guests: store in guest_prescriptions collection (keyed by guest_id string)
             guest_id = str(current_user["_id"])
             guest_rx_collection = db["guest_prescriptions"]
-            update_op = {"$push": {"prescriptions": prescription}, "$set": {"updated_at": datetime.now(timezone.utc)}}
+            # Do $pull and $push in separate ops to avoid driver/BSON issues with combined update
             if pull_conditions:
-                update_op["$pull"] = {"prescriptions": {"$or": pull_conditions}}
-            guest_rx_collection.update_one(
+                try:
+                    # Only pull if document exists and has prescriptions (avoid error on missing doc)
+                    guest_rx_collection.update_one(
+                        {"_id": guest_id, "prescriptions": {"$exists": True}},
+                        {"$pull": {"prescriptions": {"$or": pull_conditions}}, "$set": {"updated_at": datetime.now(timezone.utc)}}
+                    )
+                except Exception as pull_err:
+                    logger.warning(f"[RX] Guest pull old prescriptions failed (continuing with push): {pull_err}")
+            result = guest_rx_collection.update_one(
                 {"_id": guest_id},
-                update_op,
+                {"$push": {"prescriptions": prescription}, "$set": {"updated_at": datetime.now(timezone.utc)}},
                 upsert=True,
             )
+            if not result.acknowledged:
+                raise RuntimeError("Guest prescription update was not acknowledged by MongoDB")
             logger.info(f"[OK] Prescription saved for guest {guest_id}: type={request.type}, has_image={bool(request.image_url)} (replaced same product/cart)")
         else:
-            # Logged-in user: store in user document
             user_id = current_user["_id"]
+            # Ensure user document has prescriptions array (some accounts may not)
+            users_collection.update_one(
+                {"_id": user_id, "prescriptions": {"$exists": False}},
+                {"$set": {"prescriptions": [], "updateTime": datetime.now(timezone.utc)}}
+            )
             update_op = {"$push": {"prescriptions": prescription}, "$set": {"updateTime": datetime.now(timezone.utc)}}
             if pull_conditions:
                 update_op["$pull"] = {"prescriptions": {"$or": pull_conditions}}
-            users_collection.update_one(
+            result = users_collection.update_one(
                 {"_id": user_id},
                 update_op
             )
+            if result.matched_count == 0:
+                logger.warning(f"[RX] User {user_id} not found for prescription save, upserting prescriptions array")
+                users_collection.update_one(
+                    {"_id": user_id},
+                    {"$set": {"prescriptions": [prescription], "updateTime": datetime.now(timezone.utc)}},
+                    upsert=False
+                )
             logger.info(f"[OK] Prescription saved for user {user_id}: type={request.type}, has_image={bool(request.image_url)} (replaced same product/cart)")
         
         return {
@@ -1122,9 +1193,15 @@ async def save_user_prescription(request: SavePrescriptionRequest, current_user:
             "message": "Prescription saved successfully",
             "data": prescription
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error saving prescription: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to save prescription")
+        import traceback
+        logger.error(traceback.format_exc())
+        err_msg = (str(e).strip() or "(no message)") if e else "Failed to save prescription"
+        detail = f"{type(e).__name__}: {err_msg}"
+        raise HTTPException(status_code=500, detail=detail)
 
 # ---------- CART ENDPOINTS (INTEGRATED!) ----------
 @app.get("/api/v1/cart")
@@ -1306,13 +1383,13 @@ async def update_cart_prescription(
             return result
             
         elif mode == "manual":
-            # Handle manual prescription entry
-            if not prescription_data:
-                raise HTTPException(status_code=400, detail="prescription_data required for manual mode")
-            
+            # Handle manual prescription entry, or remove prescription (empty / "{}")
             import json
-            prescription_dict = json.loads(prescription_data) if isinstance(prescription_data, str) else prescription_data
-            prescription_dict['mode'] = 'manual'
+            if not prescription_data or (isinstance(prescription_data, str) and prescription_data.strip() in ("", "{}", "null")):
+                prescription_dict = {}
+            else:
+                prescription_dict = json.loads(prescription_data) if isinstance(prescription_data, str) else prescription_data
+                prescription_dict['mode'] = 'manual'
             
             return cart_service.update_prescription(
                 str(current_user['_id']),
@@ -1459,22 +1536,27 @@ async def create_order(request: CreateOrderRequest, current_user: dict = Depends
             metadata=metadata
         )
         
-        # Send order confirmation email
-        if result.get('success') and notification_service:
+        # Send order confirmation email (after booking via POST /api/v1/orders)
+        if not result.get('success'):
+            print("[ORDER EMAIL] Not sent: order creation did not succeed.")
+        elif not notification_service:
+            print("[ORDER EMAIL] Not sent: notification_service is not loaded (check MSG91 config).")
+        else:
             try:
                 user_name = f"{current_user.get('firstName', '')} {current_user.get('lastName', '')}".strip() or "Customer"
                 order_id = result.get('order_id', 'N/A')
-                # Calculate total from cart items
                 total = sum(item.get('total_price', 0) for item in request.cart_items)
-                notification_service.send_order_confirmation(
-                    user_email, 
-                    order_id, 
-                    f"£{total:.2f}",
-                    user_name
+                total_str = f"£{total:.2f}"
+                email_result = notification_service.send_order_confirmation(
+                    user_email, order_id, total_str, user_name
                 )
-                print(f"DEBUG: Sent order confirmation email to {user_email}")
+                if email_result.get("success"):
+                    print(f"[ORDER EMAIL] SENT to {user_email} for order {order_id} (total {total_str}).")
+                else:
+                    print(f"[ORDER EMAIL] NOT SENT to {user_email}: {email_result.get('msg', 'unknown error')}")
             except Exception as e:
-                print(f"WARNING: Failed to send order confirmation email: {e}")
+                print(f"[ORDER EMAIL] NOT SENT: exception - {e}")
+                logger.warning(f"Failed to send order confirmation email: {e}")
         
         return result
         
@@ -1704,7 +1786,7 @@ async def create_payment_session(request: CreatePaymentSessionRequest, current_u
 
         backend_order_id = order_res['order_id']
         
-        # 3. Create Stripe Session
+        # 3. Create Stripe Session (include customer_email in metadata for webhook fallback)
         session_res = payment_service.create_checkout_session(
             order_id=backend_order_id,
             amount=request.amount,
@@ -1712,7 +1794,8 @@ async def create_payment_session(request: CreatePaymentSessionRequest, current_u
             user_id=user_id,
             metadata={
                 **metadata,
-                "backend_order_id": backend_order_id # Ensure webhook uses this
+                "backend_order_id": backend_order_id,
+                "customer_email": user_email or "",
             }
         )
         
@@ -1743,7 +1826,51 @@ async def stripe_webhook(request: Request):
         session = event.data.object
         if session.payment_status == "paid":
             # Pass cart_service so order can be created from cart if it wasn't created at create-session
-            payment_service.confirm_payment(session.id, cart_service=cart_service)
+            confirm_result = payment_service.confirm_payment(session.id, cart_service=cart_service)
+            # Send order confirmation email after successful payment
+            if not confirm_result.get("success"):
+                print("[ORDER EMAIL] Not sent: payment confirm failed.")
+                logger.warning("[ORDER EMAIL] Not sent: payment confirm failed.")
+            elif not notification_service:
+                print("[ORDER EMAIL] Not sent: notification_service is not loaded (check MSG91 config).")
+                logger.warning("[ORDER EMAIL] Not sent: notification_service is not loaded.")
+            else:
+                try:
+                    order_id = confirm_result.get("order_id")
+                    order_doc = payment_service.orders_collection.find_one({"order_id": order_id})
+                    if not order_doc:
+                        print(f"[ORDER EMAIL] Not sent: order {order_id} not found in DB after confirm_payment.")
+                        logger.warning(f"[WEBHOOK] Order {order_id} not found in DB after confirm_payment, skipping email")
+                    else:
+                        user_email = order_doc.get("customer_email") or getattr(session, "customer_email", None) or (session.metadata or {}).get("customer_email") or ""
+                        if not user_email:
+                            print(f"[ORDER EMAIL] Not sent: no customer_email for order {order_id}.")
+                            logger.warning(f"[WEBHOOK] No customer_email for order {order_id}, skipping order confirmation email")
+                        else:
+                            total = order_doc.get("total_payable") or order_doc.get("order_total") or confirm_result.get("amount_total") or 0
+                            total_str = f"£{float(total):.2f}"
+                            user_name = "Customer"
+                            user_id = order_doc.get("user_id") or (session.metadata or {}).get("user_id")
+                            if user_id:
+                                try:
+                                    accounts_coll = payment_service.db[config.COLLECTION_NAME]
+                                    user = accounts_coll.find_one({"_id": ObjectId(user_id)})
+                                    if not user and user_id:
+                                        user = accounts_coll.find_one({"_id": user_id})
+                                    if user:
+                                        user_name = f"{user.get('firstName', '')} {user.get('lastName', '')}".strip() or user.get("firstName") or user.get("name") or "Customer"
+                                except Exception:
+                                    pass
+                            email_result = notification_service.send_order_confirmation(user_email, order_id, total_str, user_name)
+                            if email_result.get("success"):
+                                print(f"[ORDER EMAIL] SENT to {user_email} for order {order_id} (total {total_str}).")
+                                logger.info(f"Order confirmation email sent to {user_email} for order {order_id}")
+                            else:
+                                print(f"[ORDER EMAIL] NOT SENT to {user_email}: {email_result.get('msg', 'unknown error')}")
+                                logger.warning(f"Order confirmation email failed: {email_result.get('msg', 'unknown')}")
+                except Exception as e:
+                    print(f"[ORDER EMAIL] NOT SENT: exception - {e}")
+                    logger.exception(f"Failed to send order confirmation email after Stripe webhook: {e}")
     elif event.type == "checkout.session.expired":
         session = event.data.object
         payment_service.payments_collection.update_one(

@@ -49,6 +49,7 @@ class MSG91Service:
         
         if not self.auth_key or not self.domain:
             logger.error("[ERR] MSG91 credentials not configured")
+            print("[ORDER EMAIL] MSG91 not configured: missing MSG91_AUTH_KEY or MSG91_DOMAIN in .env")
             return {"success": False, "msg": "MSG91 not configured"}
 
         payload = {
@@ -87,14 +88,16 @@ class MSG91Service:
                 unique_id = response_data.get('data', {}).get('unique_id', 'N/A')
                 logger.info(f"[OK] MSG91: Email queued successfully")
                 logger.info(f"   Unique ID: {unique_id}")
-                logger.info(f"   Message: {response_data.get('message', 'N/A')}")
+                print(f"[ORDER EMAIL] MSG91 accepted email (unique_id: {unique_id})")
                 return {"success": True, "data": response_data}
             else:
                 logger.error(f"[ERR] MSG91: Failed with status {response.status_code}")
                 logger.error(f"   Response: {response.text}")
+                print(f"[ORDER EMAIL] MSG91 API failed: status {response.status_code}, response: {response.text[:200]}")
                 return {"success": False, "msg": f"Failed to send email: {response.text}"}
         except Exception as e:
             logger.error(f"[ERR] MSG91: Exception occurred: {str(e)}")
+            print(f"[ORDER EMAIL] MSG91 exception: {e}")
             return {"success": False, "msg": str(e)}
 
     def send_login_pin(self, email: str, pin: str, name: str = None):
@@ -169,6 +172,7 @@ class MSG91Service:
         template_id = config.MSG91_ORDER_TEMPLATE_ID
         if not template_id:
             logger.error("[ERR] MSG91_ORDER_TEMPLATE_ID not configured")
+            print("[ORDER EMAIL] Order template not set: add MSG91_ORDER_TEMPLATE_ID to .env")
             return {"success": False, "msg": "Order template ID missing"}
             
         variables = {
