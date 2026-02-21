@@ -1889,7 +1889,7 @@ async def create_payment_session(request: CreatePaymentSessionRequest, current_u
             cart_items=items,
             payment_data={
                 "pay_mode": "Stripe / Online",
-                "payment_status": "Pending",
+                "payment_status": "Paid",
                 "is_partial": False
             },
             shipping_address=address_shipping,

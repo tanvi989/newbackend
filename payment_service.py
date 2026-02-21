@@ -312,7 +312,7 @@ class StripePaymentService:
                 'payment_status': 'paid',
                 'transaction_id': None,
                 'payment_intent_id': session.payment_intent,
-                'order_status': 'Processing',
+                'order_status': 'Confirmed',
                 'is_partial': False,
                 'order_total': round(total_paid, 2),
                 'total_payable': round(total_paid, 2),
